@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 GMAIL_IMAP_HOST    = "imap.gmail.com"
 GMAIL_IMAP_PORT    = 993
-POLL_INTERVAL      = 30          # seconds between inbox checks
+POLL_INTERVAL      = 10          # seconds between inbox checks
 INCOMING_DIR       = Path("incoming_shipments")
 ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
 
