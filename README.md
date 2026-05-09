@@ -1,104 +1,95 @@
-# GoComet Nova — CG Shipment Validation Console
+# GoComet Nova — Shipment Validation Pipeline
 
-> Full-stack AI engineer take-home · Part 1 + Part 2
-
----
-
-## PRD — One Page
-
-### The Problem
-
-SU generates a shipment document set (BOL, Invoice, Packing List) and emails it to CG. CG opens every file, reads every field, mentally checks it against that customer's rules, types out what's wrong, and sends a reply. Two to four amendment cycles per shipment is normal. Each cycle costs 4–24 hours of delay with no audit trail.
-
-### The Three People
-
-| Who | Role | What they care about |
-|---|---|---|
-| **SU** (Shipping Unit) | Supplier / shipper | Docs go out, job is done. They want one clear reply — approved or here's exactly what to fix. |
-| **CG** (Cargo / Control Group) | Validator | Rules compliance across every field, every document. They want the first draft reply to be 95% ready so they just review and click send. |
-| **Customer** | End recipient | One clean, correct document set. A wrong HS code or mismatched consignee means customs delays and contract penalties. |
-
-### JTBDs
-
-> **CG:** When a new shipment arrives in my inbox, I want the system to have already cross-checked every field against the customer's rules and drafted my reply, so that I spend 2 minutes reviewing instead of 20 minutes reading.
-
-> **SU:** When I resubmit corrected docs, I want a clear list of exactly which fields failed and what the expected values are, so that I fix the right things and don't loop back a third time.
-
-### North-Star Metric
-
-**Amendment cycles per shipment.** Today it's 2–4 loops before CG signs off. Get it to 1.
-
-### Failure Mode
-
-**Silent auto-approval of a wrong document set.** If the agent approves a shipment with an incorrect HS code or mismatched consignee, it causes customs delays and contract penalties downstream.
-
-**How the system stops it:**
-- Uncertain fields (low confidence) are flagged for review *before* mismatches are even checked
-- `auto_approve` is only issued when *every* field matches *and* all confidences are ≥ 0.7
-- **The agent never sends on its own.** CG always reviews the draft and clicks Approve & Send. This is non-negotiable.
+> An AI pipeline that reads shipment documents, checks them against a customer's rules, and drafts a reply email — automatically.
 
 ---
 
-## What It Does
+## The problem it solves
 
-### Part 1 — Single Document Pipeline
+Every time a supplier sends a shipment document set (invoice, bill of lading, packing list), someone on the cargo team has to:
 
-Three agents in sequence via LangGraph:
+- Open every file
+- Read every field manually
+- Compare it against that customer's specific rules
+- Write out what's wrong
+- Send the reply and wait for a correction
 
-1. **Extractor** — sends the document to Llama 4 Scout (vision-capable), returns structured JSON with 8 fields and a confidence score for each
-2. **Validator** — compares every field against the customer rule set. Fuzzy matching, exact matching, prefix matching. Ports like "JNPT Nhava Sheva" correctly match "JNPT Mumbai". Incoterms like "CIF (Cost, Insurance & Freight)" correctly match "CIF".
-3. **Decision Agent** — picks one of three outcomes. Uncertain fields are flagged before mismatches are checked. Mismatches produce a field-by-field amendment draft. Clean docs get auto-approved with reasoning.
+This loop runs **2–4 times per shipment**. It's slow, error-prone, and fully manual.
 
-### Part 2 — Real Workflow Wiring
-
-The trigger is the missing piece from Part 1. Part 2 connects the pipeline to a simulated SU inbox:
-
-1. **Trigger** — Watchdog monitors `incoming_shipments/`. The moment a new shipment folder appears (simulating an email with attachments), the pipeline fires automatically in a background thread. No button. No polling.
-2. **Multi-doc extraction** — handles BOL + Invoice + Packing List in a single shipment. Each document is extracted independently and labelled by type.
-3. **Cross-document validation** — 6 fields (consignee, HS code, invoice number, gross weight, origin port, destination port) are compared across all documents. Mismatches surface as actionable discrepancies.
-4. **Decide & Draft** — the Router Agent produces either a clean approval email or an amendment email listing every discrepancy with field name, found value, and expected value.
-5. **Hand off** — every result is persisted to SQLite. CG can query "show me everything pending review" via the NL query layer in the Historical Dashboard.
+This tool automates the reading, checking, and drafting parts. The human still reviews and clicks send — because that's the right call for compliance — but the heavy lifting is done.
 
 ---
 
-## Project Structure
+## What it actually does
+
+### Trigger
+
+A new shipment arrives either via **Gmail** (email with PDF attachments) or **manual upload** in the UI. Either way, a folder gets created under `incoming_shipments/` and the pipeline fires automatically — no button click needed.
+
+### Pipeline (runs in the background)
+
+```
+Documents → Extract Fields → Validate vs Rules → Cross-check docs → Decision → Draft Email
+```
+
+1. **Extract** — sends each document (PDF or image) to Llama 4 Scout via Groq. Gets back 8 key fields with confidence scores.
+2. **Validate** — compares every field against the customer's rule set. Uses fuzzy matching, so "JNPT Nhava Sheva" correctly matches "JNPT Mumbai" and "CIF (Cost, Insurance & Freight)" correctly matches "CIF".
+3. **Cross-check** — compares the same fields across multiple documents. If the weight on the invoice doesn't match the BOL, it flags it.
+4. **Decide** — picks one of three outcomes:
+   - ✅ `auto_approve` — everything checks out
+   - 🟡 `flag_for_review` — some fields had low confidence
+   - 🔴 `amendment_required` — actual mismatches found
+5. **Draft email** — writes a ready-to-send reply in plain professional English. Lists exactly what's wrong and what the correct values should be.
+
+### Human review
+
+The CG (cargo team) sees all of this in the Streamlit dashboard. They can edit the draft, then click **Approve & Send**. The email goes out via Gmail SMTP. Nothing is sent automatically — ever.
+
+### History
+
+Every result is saved to a local SQLite database. The dashboard has a plain-English query box — type things like *"show me all amendment_required shipments"* and it returns results.
+
+---
+
+## Project structure
 
 ```
 gocometpart2/
-├── app.py                        # Streamlit UI — Part 1 + Part 2 console
-├── graph.py                      # LangGraph pipeline (Part 1)
-├── config.py                     # Customer rule set (GlobalTech Imports GmbH)
-├── rag.py                        # TF-IDF retrieval for compliance rules
-├── requirements.txt
+│
+├── app.py                    # Streamlit UI — the main dashboard
+├── config.py                 # Customer rules (what fields should look like)
+├── graph.py                  # LangGraph pipeline for single-doc mode
+├── rag.py                    # Simple TF-IDF rule retrieval
 │
 ├── agents/
-│   ├── extractor.py              # Vision + text extraction with retry logic
-│   ├── validator.py              # Fuzzy/exact/prefix matching against rules
-│   └── decision.py               # Priority logic + LLM reasoning
+│   ├── extractor.py          # LLM field extraction (text + vision)
+│   ├── validator.py          # Field comparison against rules
+│   └── decision.py           # approve / flag / amendment logic + LLM reasoning
 │
-├── workflow/                     # Part 2 modules
-│   ├── watcher.py                # Watchdog observer — auto-triggers pipeline on new folder
-│   ├── shipment.py               # Shipment folder loader + metadata
-│   ├── shipment_processor.py     # Runs extractor on each doc in the shipment
-│   ├── shipment_validator.py     # Runs cross-validator + per-doc validation
-│   ├── cross_validator.py        # Cross-document field consistency checks
-│   └── email_drafter.py          # Drafts CG reply email (no LLM, no SMTP)
+├── workflow/
+│   ├── watcher.py            # Watches incoming_shipments/ and fires the pipeline
+│   ├── shipment.py           # Loads a shipment folder into a structured object
+│   ├── shipment_processor.py # Runs the extractor on every doc in a shipment
+│   ├── shipment_validator.py # Per-doc validation + cross-doc consistency check
+│   ├── cross_validator.py    # Compares fields across multiple documents
+│   ├── email_drafter.py      # Builds the CG reply email (no LLM, pure logic)
+│   ├── gmail_listener.py     # Polls Gmail inbox for new emails with attachments
+│   └── smtp_sender.py        # Sends the reply when CG clicks Approve & Send
 │
 ├── core/
-│   ├── llm.py                    # Groq API wrapper (text + vision calls)
-│   └── parser.py                 # JSON cleaning utilities
+│   └── llm.py                # Groq API wrapper (text + vision calls)
 │
 ├── db/
-│   └── database.py               # SQLite persistence + NL query layer
+│   └── database.py           # SQLite — saves every result, powers the dashboard
 │
-└── incoming_shipments/           # Drop shipment folders here — watcher picks them up
+└── incoming_shipments/       # Drop folders here, watcher picks them up
 ```
 
 ---
 
-## Getting It Running
+## Running it locally
 
-### 1. Clone the repo
+### 1. Clone
 
 ```bash
 git clone https://github.com/annssshhhh01/miniNova.git
@@ -109,11 +100,15 @@ cd miniNova
 
 ```bash
 python -m venv venv
+```
 
+Activate it:
+
+```bash
 # Windows
 venv\Scripts\activate
 
-# Mac/Linux
+# Mac / Linux
 source venv/bin/activate
 ```
 
@@ -123,15 +118,28 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> **Note:** All dependencies are pure Python — no C extensions, no compiled libraries. Runs on restricted corporate environments where native DLLs get blocked.
+### 4. Set up your `.env` file
 
-### 4. Add your Groq API key
+Create a file called `.env` in the root of the project:
 
+```env
+GROQ_API_KEY=your_groq_api_key_here
 ```
-GROQ_API_KEY=your_key_here
+
+Get a free key (no credit card) at [console.groq.com/keys](https://console.groq.com/keys).
+
+**Optional — Gmail trigger + SMTP send:**
+
+If you want the live Gmail inbox trigger and the Approve & Send button to actually email someone, also add:
+
+```env
+GMAIL_ADDRESS=your@gmail.com
+GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx
 ```
 
-Get a free key at [console.groq.com/keys](https://console.groq.com/keys).
+To get a Gmail App Password: Google Account → Security → 2-Step Verification → App Passwords. Generate one for "Mail".
+
+> You can skip the Gmail setup entirely. The upload button in the UI works the same way.
 
 ### 5. Run
 
@@ -143,77 +151,73 @@ Open [http://localhost:8501](http://localhost:8501).
 
 ---
 
-## How to Test
+## How to use it
 
-### Part 2 — Shipment Operations (Watchdog trigger)
+### Upload documents and run the pipeline
 
-1. Go to **📦 Shipment Operations** tab
-2. Upload any combination of PDF/image documents (invoice, BOL, packing list)
-3. Files are saved to `incoming_shipments/<SHP-id>/`
-4. **Watchdog detects the new folder automatically** — pipeline fires without any button click
-5. The UI polls every 2 seconds and renders results when the pipeline completes
-6. CG reviews the extraction results, discrepancies, decision, and **edits the AI-drafted email**
-7. CG clicks **✉️ Approve & Send** — nothing goes to the client until this step
+1. Go to the **📦 Shipment Operations** tab
+2. Upload any PDFs or images — invoice, BOL, packing list, in any combination
+3. The pipeline fires automatically (no button needed)
+4. Wait a few seconds — results appear on their own
+5. Review the extracted fields, any discrepancies, the decision, and the draft email
+6. Edit the email if you want, then click **✉️ Approve & Send**
 
-### Part 1 — Single Document
+### Single document mode
 
-1. Go to **🔬 Single Document** tab
-2. Upload one PDF or image
-3. Click **Run Part 1 Pipeline**
-4. See extracted fields, validation results, and decision
+Go to **🔬 Single Document** — upload one file and click **Run Pipeline**. Good for testing.
 
-### Historical Dashboard
+### Dashboard
 
-- Go to **📊 Historical Dashboard**
-- See running counts by decision type
-- Use the NL query box: `"how many shipments were flagged this week?"` or `"show me all amendment_required decisions"`
-
-### Three test scenarios
-
-| Document | What should happen |
-|---|---|
-| Clean doc — all fields match | 🟢 auto_approve |
-| Degraded/scanned — some fields unreadable | 🟡 flag_for_review |
-| Wrong Incoterms (FOB instead of CIF) | 🔴 amendment_required |
+Go to **📊 Historical Dashboard** to browse past shipments and query them in plain English.
 
 ---
 
-## The Customer Rule Set
+## The customer rule set
 
-Rules for **GlobalTech Imports GmbH** (CUST001), defined in `config.py`:
+Pre-configured for **GlobalTech Imports GmbH** (defined in `config.py`):
 
-| Field | Expected | Match Type |
+| Field | Expected Value | How it matches |
 |---|---|---|
 | Consignee Name | GlobalTech Imports GmbH | Fuzzy |
 | HS Code | 8471.30 | Exact |
-| Port of Loading | JNPT Mumbai | Fuzzy + variants |
-| Port of Discharge | Hamburg | Fuzzy + variants |
+| Port of Loading | JNPT Mumbai | Fuzzy + port variants |
+| Port of Discharge | Hamburg | Fuzzy + port variants |
 | Incoterms | CIF | Code extraction |
 | Description of Goods | Electronic Components | Fuzzy (contains) |
-| Gross Weight | 500 KG | Fuzzy |
-| Invoice Number | INV prefix | Prefix match |
+| Gross Weight | 500 KG | Numeric fuzzy |
+| Invoice Number | Must start with INV | Prefix match |
 
 ---
 
-## Stack
+## Test scenarios to try
 
-| Component | Technology |
+| What you upload | What should happen |
 |---|---|
-| Pipeline orchestration | LangGraph |
-| LLM + Vision | Groq · Llama 4 Scout 17B |
-| Filesystem trigger | Watchdog |
-| UI | Streamlit |
-| Persistence | SQLite |
-| PDF extraction | pypdf |
-| RAG retrieval | Pure Python TF-IDF + cosine similarity |
-
-No Docker. No database server. Just Python and a Groq API key.
+| A clean, correct document set | ✅ auto_approve |
+| A blurry scan where fields are hard to read | 🟡 flag_for_review |
+| A doc with wrong Incoterms (FOB instead of CIF) | 🔴 amendment_required |
 
 ---
 
-## Known Limitations
+## Tech stack
 
-- **Scanned PDFs** — pypdf handles text-based PDFs. For scans, upload pages as images directly for best results.
-- **Single customer** — rule set is hardcoded for GlobalTech Imports GmbH. Multi-tenant rule management is the obvious next step.
-- **RAG quality** — TF-IDF works but misses semantic similarity. A proper embedding model would improve retrieval accuracy.
-- **Synchronous pipeline** — for bulk processing you'd run extractions in parallel. Currently each doc is extracted sequentially.
+| Layer | Tool |
+|---|---|
+| UI | Streamlit |
+| LLM + Vision | Groq · Llama 4 Scout 17B |
+| Pipeline orchestration | LangGraph |
+| File system trigger | Watchdog |
+| Database | SQLite (local, no server needed) |
+| PDF reading | pypdf |
+| Email sending | Gmail SMTP |
+| Rule retrieval | TF-IDF cosine similarity |
+
+No Docker. No cloud infra. Just Python and a free API key.
+
+---
+
+## Known limitations
+
+- **Scanned PDFs** — pypdf reads text-based PDFs only. For scanned pages, upload them as images (PNG/JPG) for best results.
+- **Single customer** — the rule set is hardcoded for GlobalTech. To add a new customer, update `config.py`.
+- **Sequential extraction** — documents are extracted one at a time. Fine for demos and small batches; you'd parallelize this for production.

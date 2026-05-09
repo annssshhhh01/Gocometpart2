@@ -1,6 +1,17 @@
+# ── UI ────────────────────────────────────────────────────────────────────────
 streamlit>=1.35.0
+
+# ── LangGraph / LangChain ─────────────────────────────────────────────────────
 langgraph>=0.1.0
 langchain-core>=0.2.0
+
+# ── Environment & HTTP ───────────────────────────────────────────────────────
 python-dotenv>=1.0.0
 requests>=2.31.0
-pypdf>=4.0.0
+urllib3>=2.0.0          # SSL warning suppression in core/llm.py
+
+# ── Document parsing ─────────────────────────────────────────────────────────
+pypdf>=4.0.0            # PDF text extraction (shipment_processor.py)
+
+# ── File system watcher ───────────────────────────────────────────────────────
+watchdog>=4.0.0         # Auto-triggers pipeline on new incoming_shipments/ folder
