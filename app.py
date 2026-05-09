@@ -248,12 +248,23 @@ with tab_p2:
     elif not result_queue.empty():
         item = result_queue.get_nowait()
         if item.get("error"):
-            st.error(f"❌ Pipeline error for `{item['shipment_id']}`: {item['error']}")
+            st.error(f"Pipeline error for `{item['shipment_id']}`: {item['error']}")
         else:
             st.session_state.p2_results = item
-            st.toast(f"📧 New shipment `{item['shipment_id']}` arrived via Gmail!", icon="📬")
             st.rerun()
 
+    # ── Auto-poll for Gmail results ───────────────────────────────────────────
+    # When no results are loaded and nothing is pending from a manual upload,
+    # rerun the page every 5 seconds so Gmail-triggered results appear
+    # automatically without the user needing to click anything.
+    if not st.session_state.p2_results and not st.session_state.pending_shipment_id:
+        st.markdown(
+            '<div style="color:#334155;font-size:0.75rem;margin-top:8px">'
+            '&#x25CF; Live — checking for new Gmail emails every 5s&hellip;</div>',
+            unsafe_allow_html=True,
+        )
+        time.sleep(5)
+        st.rerun()
 
     # ── Step 3 — Render results (from session state, survives rerenders) ──────
     if st.session_state.p2_results:
