@@ -15,6 +15,7 @@ from workflow.shipment_processor import process_shipment
 from workflow.shipment_validator import validate_shipment
 from workflow.email_drafter import draft_email
 from workflow.watcher import start_watcher, result_queue
+from workflow.gmail_listener import start_gmail_listener, is_gmail_listener_running
 
 # ── Init ──────────────────────────────────────────────────────────────────────
 init_db()
@@ -23,6 +24,11 @@ init_db()
 # This is the real trigger: as soon as a folder lands in incoming_shipments/,
 # the full pipeline fires automatically — no button required.
 start_watcher()
+
+# ── Start Gmail IMAP listener (polls inbox every 30s, downloads attachments)
+# When SU sends an email with docs attached, this thread saves them to
+# incoming_shipments/ and Watchdog triggers the pipeline automatically.
+start_gmail_listener()
 
 RULES_CONTEXT = json.dumps(
     {"customer": "GlobalTech Imports GmbH", "rules": RULES, "policy": APPROVAL_POLICY},
@@ -150,7 +156,25 @@ with tab_p2:
 
     # ── Upload ────────────────────────────────────────────────────────────────
     st.markdown('<div class="sec-title">Upload Shipment Documents</div>', unsafe_allow_html=True)
-    st.caption("📂 Pipeline runs automatically as soon as you upload your documents — no button needed.")
+
+    # ── Gmail Inbox Status Banner ─────────────────────────────────────────────
+    import os
+    gmail_addr = os.getenv("GMAIL_ADDRESS", "")
+    if gmail_addr and is_gmail_listener_running():
+        st.markdown(
+            f'<div style="background:#052e16;border:1px solid #166534;border-radius:10px;'
+            f'padding:10px 18px;margin-bottom:14px;font-size:0.85rem;color:#86efac">'
+            f'📧 <b>Gmail inbox monitoring active</b> — '
+            f'watching <code style="color:#bbf7d0">{gmail_addr}</code> '
+            f'for new emails with attachments. Pipeline triggers automatically.</div>',
+            unsafe_allow_html=True,
+        )
+    elif gmail_addr:
+        st.warning("⚠️ Gmail listener starting… (may take a few seconds)")
+    else:
+        st.info("ℹ️ Gmail not configured — using manual upload below. Add GMAIL_ADDRESS and GMAIL_APP_PASSWORD to .env to enable inbox monitoring.")
+
+    st.caption("📂 You can also manually upload documents below — pipeline runs automatically on upload.")
 
     uploaded_files = st.file_uploader(
         "Drop shipment documents here",
@@ -195,11 +219,14 @@ with tab_p2:
             f"⚙️ Watchdog detected the folder — pipeline is running automatically…"
         )
 
-    # ── Step 2 — Poll result_queue for the pipeline result ───────────────────
-    # The watcher thread pushes results into result_queue when it finishes.
-    # We drain any items that arrived since the last rerender.
+    # ── Step 2 — Poll result_queue for pipeline results ──────────────────────
+    # Results arrive here from TWO sources:
+    #   a) Manual upload → Watchdog → pipeline thread → result_queue
+    #   b) Gmail listener → Watchdog → pipeline thread → result_queue
+    # In both cases, we drain the queue and show whatever arrives.
+
+    # Case A: waiting for a specific upload-triggered shipment
     if st.session_state.pending_shipment_id:
-        # Non-blocking drain — take everything that's ready right now
         while not result_queue.empty():
             item = result_queue.get_nowait()
             if item["shipment_id"] == st.session_state.pending_shipment_id:
@@ -210,14 +237,23 @@ with tab_p2:
                     st.session_state.p2_results = item
                     st.session_state.pending_shipment_id = None
             else:
-                # Put back items for other shipments (rare edge case)
-                result_queue.put(item)
+                result_queue.put(item)  # put back — for another rerender
 
-        # If still pending, show spinner and auto-rerun after a short pause
         if st.session_state.pending_shipment_id:
             with st.spinner("⏳ Pipeline running… (auto-refreshing)"):
                 time.sleep(2)
             st.rerun()
+
+    # Case B: Gmail triggered a new result (no upload pending, but queue has item)
+    elif not result_queue.empty():
+        item = result_queue.get_nowait()
+        if item.get("error"):
+            st.error(f"❌ Pipeline error for `{item['shipment_id']}`: {item['error']}")
+        else:
+            st.session_state.p2_results = item
+            st.toast(f"📧 New shipment `{item['shipment_id']}` arrived via Gmail!", icon="📬")
+            st.rerun()
+
 
     # ── Step 3 — Render results (from session state, survives rerenders) ──────
     if st.session_state.p2_results:
