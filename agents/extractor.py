@@ -34,11 +34,32 @@ def clean_json(raw: str) -> str:
     return raw.strip()
 
 
+def normalize_fields(data: dict) -> dict:
+    """Collapse list values to a single string.
+
+    The LLM occasionally returns a list when a document contains multiple
+    HS codes or goods descriptions.  We always want a single scalar value
+    so the validator and email drafter never see raw Python lists.
+
+    Strategy:
+      - list with one element  → unwrap it
+      - list with many elements → take the first (most prominent) value
+      - any other type         → leave unchanged
+    """
+    for field, payload in data.items():
+        if not isinstance(payload, dict):
+            continue
+        val = payload.get("value")
+        if isinstance(val, list):
+            payload["value"] = val[0] if val else None
+    return data
+
+
 def ensure_all_fields(data: dict) -> dict:
     for field in FIELDS:
         if field not in data:
             data[field] = {"value": None, "confidence": 0.0}
-    return data
+    return normalize_fields(data)
 
 
 def extract_fields(text: str, images: list[str] | None = None) -> dict:

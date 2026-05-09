@@ -90,6 +90,24 @@ def _run_pipeline(shipment_path: Path) -> None:
             validation_report=validation_report,
         )
 
+        # Read sender metadata (written by gmail_listener) if present
+        meta_path = shipment_path / "meta.json"
+        sender_email = ""
+        original_subject = ""
+        if meta_path.exists():
+            try:
+                import json as _json2
+                meta = _json2.loads(meta_path.read_text(encoding="utf-8"))
+                # Extract just the email address from "Name <email@example.com>" format
+                raw_sender = meta.get("sender_email", "")
+                if "<" in raw_sender and ">" in raw_sender:
+                    sender_email = raw_sender.split("<")[-1].strip(">").strip()
+                else:
+                    sender_email = raw_sender.strip()
+                original_subject = meta.get("subject", "")
+            except Exception as meta_exc:
+                logger.warning("Could not read meta.json: %s", meta_exc)
+
         save_result(
             extracted=merged,
             validated={
@@ -105,6 +123,9 @@ def _run_pipeline(shipment_path: Path) -> None:
             "validation_report": validation_report,
             "decision":          decision,
             "email_draft":       email_draft,
+            "sender_email":      sender_email,
+            "original_subject":  original_subject,
+            "num_files":         len(shipment.get("documents", [])),
             "error":             None,
         })
 

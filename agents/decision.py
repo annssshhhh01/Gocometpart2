@@ -35,23 +35,48 @@ def decide(validation: dict, rules_context: str) -> dict:
                 "reason": f"Low confidence ({result['confidence']:.0%}) — needs human verification"
             })
 
-    # Step 4: LLM generates reasoning
+    # Step 4: LLM generates reasoning (with smart fallback — never shows "LLM failure")
+    def _rule_based_reason(decision: str, validation: dict) -> str:
+        """Generate a deterministic reason so the UI always has something meaningful."""
+        if decision == "auto_approve":
+            return (
+                "All extracted fields match the customer rule set. "
+                "No discrepancies or low-confidence values detected — shipment approved."
+            )
+        if decision == "flag_for_review":
+            uncertain = [f.replace("_", " ") for f, v in validation.items() if v.get("status") == "uncertain"]
+            fields_str = ", ".join(uncertain[:3]) or "one or more fields"
+            return (
+                f"Low extraction confidence on: {fields_str}. "
+                "Cannot auto-approve until these are verified by CG."
+            )
+        # amendment_required
+        mismatches = [f.replace("_", " ") for f, v in validation.items() if v.get("status") == "mismatch"]
+        fields_str = ", ".join(mismatches[:3]) or "one or more fields"
+        return (
+            f"Discrepancies found in: {fields_str}. "
+            "Values do not match the customer's required specifications."
+        )
+
+    # Trim validation to avoid token limit on large multi-doc shipments
+    MAX_FIELDS = 12
+    trimmed_validation = dict(list(validation.items())[:MAX_FIELDS])
+
     prompt = f"""You are a trade compliance assistant.
 
 Validation result:
-{json.dumps(validation, indent=2)}
-
-Applicable rules:
-{rules_context}
+{json.dumps(trimmed_validation, indent=2)}
 
 Decision already made: {decision}
 
-Explain in 1-2 lines based only on validation and rules. Do not add extra information."""
+Explain in 1-2 lines why this decision was made, based only on the validation result above. Be specific about which fields caused it. No filler text."""
 
     try:
         reason = call_llama(prompt).strip()
+        if not reason:
+            reason = _rule_based_reason(decision, validation)
     except Exception:
-        reason = "Reasoning unavailable due to LLM failure."
+        reason = _rule_based_reason(decision, validation)
 
     output = {
         "decision": decision,

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import email
 import imaplib
+import json
 import logging
 import os
 import sys
@@ -150,6 +151,16 @@ def _poll_once(mail: imaplib.IMAP4_SSL) -> int:
             saved = _save_attachments(msg, shp_dir)
 
             if saved:
+                # Save sender metadata so watcher can address the SMTP reply
+                meta = {
+                    "sender_email": sender,
+                    "subject": subject,
+                    "shipment_id": shipment_id,
+                    "folder": folder,
+                }
+                (shp_dir / "meta.json").write_text(
+                    json.dumps(meta, indent=2), encoding="utf-8"
+                )
                 print(
                     f"[Gmail] New email from: {sender}\n"
                     f"        Folder  : {folder}\n"

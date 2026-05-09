@@ -433,12 +433,28 @@ with tab_p2:
         )
 
         if send_clicked:
-            st.success(
-                f"✅ **Reply approved and sent** for shipment `{shipment_id}`.\n\n"
-                "The decision and email have been recorded. "
-                "CG can query this shipment via the Historical Dashboard."
-            )
-            st.balloons()
+            sender_email = r.get("sender_email", "")
+            if not sender_email:
+                st.warning(
+                    "No sender email found for this shipment. "
+                    "This may have been uploaded manually (not via Gmail). "
+                    "Use the Download button to send the reply manually."
+                )
+            else:
+                try:
+                    from workflow.smtp_sender import send_reply
+                    send_reply(
+                        to_email=sender_email,
+                        subject=email_draft["subject"],
+                        body=edited_body,
+                    )
+                    st.success(
+                        f"Reply sent to **{sender_email}** for shipment `{shipment_id}`.\n\n"
+                        "The decision and email have been recorded in the Historical Dashboard."
+                    )
+                    st.balloons()
+                except Exception as smtp_err:
+                    st.error(f"Failed to send email: {smtp_err}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PART 1 — SINGLE DOCUMENT
