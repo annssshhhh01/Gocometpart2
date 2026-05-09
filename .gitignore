@@ -49,3 +49,8 @@ logs/
 
 # OS files
 desktop.ini
+
+# Incoming shipments — runtime data (PDFs uploaded by users, not source)
+# Keep the folder itself tracked via incoming_shipments/.gitkeep
+incoming_shipments/SHP-*/
+processed_shipments/
