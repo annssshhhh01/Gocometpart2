@@ -61,17 +61,14 @@ def send_reply(
     logger.info("Sending reply to %s | Subject: %s", to_email, subject)
 
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
+        with smtplib.SMTP_SSL(SMTP_HOST, 465) as server:
             server.login(from_email, password)
             server.sendmail(from_email, to_email, msg.as_string())
-        logger.info("Reply sent successfully to %s", to_email)
+        logger.info("Reply sent via port 465 SSL to %s", to_email)
     except smtplib.SMTPAuthenticationError as exc:
         raise RuntimeError(
             f"Gmail SMTP auth failed: {exc}\n"
-            "Make sure GMAIL_APP_PASSWORD is correct and IMAP is enabled."
+            "Make sure GMAIL_APP_PASSWORD is correct."
         ) from exc
     except Exception as exc:
         raise RuntimeError(f"SMTP send failed: {exc}") from exc
